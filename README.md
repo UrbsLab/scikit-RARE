@@ -1,6 +1,5 @@
 # scikit-RARE
 
-## About
 **RARE: Relevant Association Rare-variant-bin Evolver** (see [citation](#citiation)) is an evolutionary algorithm approach to binning rare variants as a rare variant association analysis tool. scikit-RARE is scikit compatible pypi package for the RARE algotithm.
 
 RARE constructs bins of rare variant features with relevant association to class (univariate and/or multivariate interactions) through the following steps:
