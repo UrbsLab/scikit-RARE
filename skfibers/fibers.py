@@ -1,24 +1,19 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from skrare.methods import rare_algorithm_v2
+
+from skfibers.methods import fibers_algorithm
 
 
-class RARE(BaseEstimator, TransformerMixin):
+class FIBERS(BaseEstimator, TransformerMixin):
     def __init__(self, label_name="Class", duration_name="grf_yrs",
                  given_starting_point=False, amino_acid_start_point=None, amino_acid_bins_start_point=None,
                  iterations=1000, set_number_of_bins=1, min_features_per_group=1, max_number_of_groups_with_feature=1,
                  informative_cutoff=0.2, crossover_probability=0.5, mutation_probability=0.05, elitism_parameter=0.2,
-                 scoring_method='Relief', score_based_on_sample=True, score_with_common_variables=False,
-                 instance_sample_size=500,
                  random_seed=None, bin_size_variability_constraint=None, max_features_per_bin=None):
 
         # iterations
-        self.score_with_common_variables = score_with_common_variables
-        self.score_based_on_sample = score_based_on_sample
-        self.scoring_method = scoring_method
-        self.rare_variant_maf_cutoff = rare_variant_maf_cutoff
-        self.original_feature_matrix = original_feature_matrix
+        self.original_feature_matrix = None
 
         if not self.check_is_int(iterations):
             raise Exception("iterations param must be nonnegative integer")
@@ -96,27 +91,9 @@ class RARE(BaseEstimator, TransformerMixin):
         if not (isinstance(label_name, str)):
             raise Exception("label_name param must be str")
 
-        # scoring_method
-        if scoring_method != 'Relief' or scoring_method != 'Univariate' or scoring_method != 'Relief only on bin and ' \
-                                                                                             'common features':
-            raise Exception(
-                "scoring_method param must be 'Relief' or 'Univariate' or 'Relief only on bin and common features'")
-
-        # score_based_on_sample
-        if not (isinstance(score_based_on_sample, bool)):
-            raise Exception("score_based_on_sample param must be boolean True or False")
-
-        # score_with_common_variables
-        if not (isinstance(score_with_common_variables, bool)):
-            raise Exception("score_with_common_variables param must be boolean True or False")
-
-        # instance_sample_size
-        if not self.check_is_int(instance_sample_size):
-            raise Exception("instance_sample_size param must be integer")
-        if instance_sample_size > set_number_of_bins:
-            raise Exception(
-                "instance_sample_size param must be less than or equal to the number of bins, which is " + str(
-                    set_number_of_bins) + " bins.")
+        # duration_name
+        if not (isinstance(duration_name, str)):
+            raise Exception("duration_name param must be str")
 
         # bin_size_variability_constraint
         if not (bin_size_variability_constraint is None) or not self.check_is_float(bin_size_variability_constraint):
@@ -138,6 +115,7 @@ class RARE(BaseEstimator, TransformerMixin):
         self.amino_acid_bins_start_point = amino_acid_bins_start_point
         self.iterations = iterations
         self.label_name = label_name
+        self.duration_name = duration_name
         self.set_number_of_bins = set_number_of_bins
         self.min_features_per_group = min_features_per_group
         self.max_number_of_groups_with_feature = max_number_of_groups_with_feature
@@ -145,10 +123,11 @@ class RARE(BaseEstimator, TransformerMixin):
         self.crossover_probability = crossover_probability
         self.mutation_probability = mutation_probability
         self.elitism_parameter = elitism_parameter
-        self.instance_sample_size = instance_sample_size
         self.random_seed = random_seed
         self.bin_size_variability_constraint = bin_size_variability_constraint
         self.max_features_per_bin = max_features_per_bin
+
+        # TODO: Implement Reboot Population method
         self.reboot_filename = None
 
         # Reboot Population
@@ -197,6 +176,9 @@ class RARE(BaseEstimator, TransformerMixin):
         if not (self.label_name in original_feature_matrix.columns):
             raise Exception("label_name param must be a column in the dataset")
 
+        if not (self.duration_name in original_feature_matrix.columns):
+            raise Exception("duration_name param must be a column in the dataset")
+
         self.original_feature_matrix = original_feature_matrix
 
         return self
@@ -209,23 +191,25 @@ class RARE(BaseEstimator, TransformerMixin):
         if not (self.original_feature_matrix == original_feature_matrix):
             raise Exception("X param does not match fitted matrix. Fit needs to be first called on the same matrix.")
 
-        bin_feature_matrix, common_features_and_bins_matrix, amino_acid_bins, \
-            amino_acid_bin_scores, rare_feature_maf_dict, \
-            common_feature_maf_dict, \
-            rare_feature_df, common_feature_df, \
-            maf_0_features = rare_algorithm_v2(self.given_starting_point, self.amino_acid_start_point,
-                                               self.amino_acid_bins_start_point, self.iterations,
-                                               self.original_feature_matrix,
-                                               self.label_name, self.rare_variant_maf_cutoff, self.set_number_of_bins,
-                                               self.min_features_per_group, self.max_number_of_groups_with_feature,
-                                               self.scoring_method, self.score_based_on_sample,
-                                               self.score_with_common_variables,
-                                               self.instance_sample_size,
-                                               self.crossover_probability, self.mutation_probability,
-                                               self.elitism_parameter,
-                                               self.random_seed, self.bin_size_variability_constraint,
-                                               self.max_features_per_bin)
-
-        return self, bin_feature_matrix, common_features_and_bins_matrix, \
-            amino_acid_bins, amino_acid_bin_scores, rare_feature_maf_dict, \
-            common_feature_maf_dict, rare_feature_df, common_feature_df, maf_0_features
+        bin_feature_matrix_internal, amino_acid_bins_internal, \
+            amino_acid_bin_scores_internal, maf_0_features = \
+            fibers_algorithm(
+                self.given_starting_point,
+                self.amino_acid_start_point,
+                self.amino_acid_bins_start_point,
+                self.iterations,
+                self.original_feature_matrix,
+                self.label_name,
+                self.duration_name,
+                self.set_number_of_bins,
+                self.min_features_per_group,
+                self.max_number_of_groups_with_feature,
+                self.informative_cutoff,
+                self.crossover_probability,
+                self.mutation_probability,
+                self.elitism_parameter,
+                self.random_seed,
+                self.bin_size_variability_constraint,
+                self.max_features_per_bin)
+        return self, bin_feature_matrix_internal, amino_acid_bins_internal, \
+            amino_acid_bin_scores_internal, maf_0_features

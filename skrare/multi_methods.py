@@ -1,17 +1,12 @@
+import os
 import random
-import statistics
 import numpy as np
 import pandas as pd
+import statistics
 from random import randrange
 from skrebate import MultiSURF
 from sklearn.feature_selection import chi2
-
-
-# This file contains all the code defining the functions for RARE and its Rare Variant Data Simulators
-# No function is
-# ever called in this file, please see the "RARE Experiment 1" file for an example of how to run RARE on the Rare
-# Variant Data Simulators Readers please note: amino acid refers to a rare variant feature, while amino acid bin is
-# the equivalent of a bin of rare variant features
+from multiprocessing import Pool
 
 
 # Step 1: Initialize Population of Candidate Bins
@@ -19,7 +14,6 @@ from sklearn.feature_selection import chi2
 # Random initialization of candidate bins, which are groupings of multiple features
 # The value of each bin/feature is the sum of values for each feature in the bin
 # Adding a function that can be an option to automatically separate rare and common variables
-
 
 # Defining a function to delete variables with MAF = 0
 def remove_empty_variables(original_feature_matrix, label_name):
@@ -59,7 +53,7 @@ def random_feature_grouping(feature_matrix, label_name, number_of_groups, min_fe
     feature_df = feature_matrix.drop(columns=[label_name])
 
     # Creating a list of features
-    feature_list = list(set(feature_df.columns))
+    feature_list = list(feature_df.columns)
 
     np.random.seed(random_seed)
     random_seeds = np.random.randint(len(feature_list) * len(feature_list), size=len(feature_list))
@@ -88,13 +82,11 @@ def random_feature_grouping(feature_matrix, label_name, number_of_groups, min_fe
         random.seed(random_seeds[y - min_features_per_group * number_of_groups])
         feature_groups[random.choice(list(feature_groups.keys()))].append(feature_list[y])
 
-    np.random.seed(random_seed)
-    random_seeds = np.random.randint(len(feature_list))
+    # Removing duplicates of features in the same bin
     for z in range(0, len(feature_groups)):
-        # Removing duplicates of features in the same bin
         feature_groups[z] = list(set(feature_groups[z]))
 
-        # Randomly removing features until the number of features is equal to or less than the max_features_per_bin
+        # Randomly removing features until the number of features is equal to or less than the max_features_per_bin 
         # param
         if not (max_features_per_bin is None):
             if len(feature_groups[z]) > max_features_per_bin:
@@ -369,7 +361,7 @@ def chi_square_feature_importance(bin_feature_matrix, label_name, amino_acid_bin
 # Based on the value of the elitism parameter, a number of high scoring parent bins will be preserved for the next gen
 
 
-# Defining a function to probabilitically select 2 parent bins based on their feature importance rank
+# Defining a function to probabilistically select 2 parent bins based on their feature importance rank
 # Tournament Selection works in this case by choosing a random sample of the bins and choosing the best two scores
 def tournament_selection_parent_bins(bin_scores, random_seed):
     random.seed(random_seed)
@@ -394,11 +386,49 @@ def tournament_selection_parent_bins(bin_scores, random_seed):
     return parent_bins
 
 
-# Defining a function for crossover and mutation that creates n offspring based on crossover of selected parents n is
-# the max number of bins (but not all the offspring will carry on, as the worst will be deleted in Step 2a next time)
-def crossover_and_mutation(max_population_of_bins, elitism_parameter, feature_list, binned_feature_groups, bin_scores,
-                           crossover_probability, mutation_probability, random_seed, bin_size_variability_constraint,
-                           max_features_per_bin):
+# Defining a function to perform crossover and mutation using multiple cores at once
+def crossover_and_mutation_multiprocess(max_population_of_bins, elitism_parameter, feature_list, binned_feature_groups,
+                                        bin_scores,
+                                        crossover_probability, mutation_probability, random_seed,
+                                        bin_size_variability_constraint,
+                                        max_features_per_bin):
+    # Determining the number of offspring created
+    num_replacement_sets = int((max_population_of_bins - (elitism_parameter * max_population_of_bins)) / 2)
+    np.random.seed(random_seed)
+    random_seeds = np.random.randint(len(feature_list) * len(feature_list), size=num_replacement_sets * 8)
+    arg_of_func = [(feature_list, binned_feature_groups, bin_scores,
+                    crossover_probability, mutation_probability,
+                    bin_size_variability_constraint, list([]), max_features_per_bin)] * num_replacement_sets
+    arg_of_func = list(arg_of_func)
+
+    # Create sets of random seeds for generating offspring
+    for i in range(num_replacement_sets):
+        random_seeds_array = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        for seed in range(10):
+            random_seeds_array[seed] = random_seeds[seed * num_replacement_sets + i]
+        arg_list = list(arg_of_func[i])
+        arg_list[6] = list(random_seeds_array)
+        arg_of_func[i] = tuple(arg_list)
+
+    p = Pool(processes=(os.cpu_count()))
+    offspring_list = p.starmap(crossover_and_mutation_for_pool, arg_of_func)
+    p.close()
+
+    # formatting offspring list 
+    reformatted = []
+    for i in range(len(offspring_list)):
+        reformatted.extend(offspring_list[i])
+
+    return reformatted
+
+
+# Defining a function for crossover and mutation that creates n offspring based on crossover of selected parents
+# n is the max number of bins (but not all the offspring will carry on, as the worst will be deleted in Step 2a next
+# time)
+def crossover_and_mutation_for_pool(feature_list, binned_feature_groups, bin_scores,
+                                    crossover_probability, mutation_probability,
+                                    bin_size_variability_constraint, random_seeds,
+                                    max_features_per_bin):
     feature_list = list(set(feature_list))
 
     # Creating a list for offspring
@@ -406,168 +436,159 @@ def crossover_and_mutation(max_population_of_bins, elitism_parameter, feature_li
 
     # Creating a number of offspring equal to the number needed to replace the non-elites
     # Each pair of parents will produce two offspring
-    num_replacement_sets = int((max_population_of_bins - (elitism_parameter * max_population_of_bins)) / 2)
-    np.random.seed(random_seed)
-    random_seeds = np.random.randint(len(feature_list) * len(feature_list), size=num_replacement_sets * 10)
-    for i in range(0, num_replacement_sets):
-        # Choosing the two parents and gettings the list of features in each parent bin
-        parent_bins = tournament_selection_parent_bins(bin_scores, random_seeds[i])
-        parent1_features = binned_feature_groups[parent_bins[0]].copy()
-        parent2_features = binned_feature_groups[parent_bins[1]].copy()
+    # Choosing the two parents and getting the list of features in each parent bin
+    parent_bins = tournament_selection_parent_bins(bin_scores, random_seeds[0])
+    parent1_features = binned_feature_groups[parent_bins[0]].copy()
+    parent2_features = binned_feature_groups[parent_bins[1]].copy()
 
-        # Creating two lists for the offspring bins
-        offspring1 = []
-        offspring2 = []
+    # Creating two lists for the offspring bins
+    offspring1 = []
+    offspring2 = []
 
-        # CROSSOVER
-        # Each feature in the parent bin will cross over based on the given probability (uniform crossover)
+    # CROSSOVER
+    # Each feature in the parent bin will cross over based on the given probability (uniform crossover)
 
-        # Creating two df for parent features and probability of crossover
-        np.random.seed(random_seeds[num_replacement_sets + i])
-        randnums1 = list(np.random.randint(0, 101, len(parent1_features)))
-        crossover_threshold1 = list([crossover_probability * 100] * len(parent1_features))
-        parent1_df = pd.DataFrame(parent1_features, columns=['Features'])
-        parent1_df['Threshold'] = crossover_threshold1
-        parent1_df['Rand_prob'] = randnums1
+    # Creating two df for parent features and probability of crossover
+    np.random.seed(random_seeds[1])
+    randnums1 = list(np.random.randint(0, 101, len(parent1_features)))
+    crossover_threshold1 = list([crossover_probability * 100] * len(parent1_features))
+    parent1_df = pd.DataFrame(parent1_features, columns=['Features'])
+    parent1_df['Threshold'] = crossover_threshold1
+    parent1_df['Rand_prob'] = randnums1
 
-        np.random.seed(random_seeds[num_replacement_sets * 2 + i])
-        randnums2 = list(np.random.randint(0, 101, len(parent2_features)))
-        crossover_threshold2 = list([crossover_probability * 100] * len(parent2_features))
-        parent2_df = pd.DataFrame(parent2_features, columns=['Features'])
-        parent2_df['Threshold'] = crossover_threshold2
-        parent2_df['Rand_prob'] = randnums2
+    np.random.seed(random_seeds[2])
+    randnums2 = list(np.random.randint(0, 101, len(parent2_features)))
+    crossover_threshold2 = list([crossover_probability * 100] * len(parent2_features))
+    parent2_df = pd.DataFrame(parent2_features, columns=['Features'])
+    parent2_df['Threshold'] = crossover_threshold2
+    parent2_df['Rand_prob'] = randnums2
 
-        # Features with random probability less than the crossover probability will go to offspring 1.
-        # The rest will go to offspring 2.
-        offspring1.extend(list(parent1_df.loc[parent1_df['Threshold'] > parent1_df['Rand_prob']]['Features']))
-        offspring2.extend(list(parent1_df.loc[parent1_df['Threshold'] <= parent1_df['Rand_prob']]['Features']))
-        offspring2.extend(list(parent2_df.loc[parent2_df['Threshold'] > parent2_df['Rand_prob']]['Features']))
-        offspring1.extend(list(parent2_df.loc[parent2_df['Threshold'] <= parent2_df['Rand_prob']]['Features']))
+    # Features with random probability less than the crossover probability will go to offspring 1.
+    # The rest will go to offspring 2.
+    offspring1.extend(list(parent1_df.loc[parent1_df['Threshold'] > parent1_df['Rand_prob']]['Features']))
+    offspring2.extend(list(parent1_df.loc[parent1_df['Threshold'] <= parent1_df['Rand_prob']]['Features']))
+    offspring2.extend(list(parent2_df.loc[parent2_df['Threshold'] > parent2_df['Rand_prob']]['Features']))
+    offspring1.extend(list(parent2_df.loc[parent2_df['Threshold'] <= parent2_df['Rand_prob']]['Features']))
 
-        # Remove repeated features within each offspring
-        offspring1 = list(set(offspring1))
-        offspring2 = list(set(offspring2))
+    # Remove repeated features within each offspring
+    offspring1 = list(set(offspring1))
+    offspring2 = list(set(offspring2))
 
-        # MUTATION
-        #  (deletion and addition) only occurs with a certain probability on each feature in the
-        # original feature space
+    # MUTATION
 
-        # Creating a probability for mutation (addition) that accounts for the ratio between the feature list and the
-        # size of the bin
-        if len(offspring1) > 0 and len(offspring1) != len(feature_list):
-            mutation_addition_prob1 = mutation_probability * (len(offspring1)) / (
-                (len(feature_list) - len(offspring1)))
-        elif len(offspring1) == 0 and len(offspring1) != len(feature_list):
-            mutation_addition_prob1 = mutation_probability
-        elif len(offspring1) == len(feature_list):
-            mutation_addition_prob1 = 0
+    # Mutation (deletion and addition) only occurs with a certain probability on each feature in the original feature
+    # space
 
-        if len(offspring2) > 0 and len(offspring2) != len(feature_list):
-            mutation_addition_prob2 = mutation_probability * (len(offspring2)) / (
-                (len(feature_list) - len(offspring2)))
-        elif len(offspring2) == 0 and len(offspring2) != len(feature_list):
-            mutation_addition_prob2 = mutation_probability
-        elif len(offspring2) == len(feature_list):
-            mutation_addition_prob2 = 0
+    # Creating a probability for mutation (addition) that accounts for the ratio between the feature list and the
+    # size of the bin
+    if len(offspring1) > 0 and len(offspring1) != len(feature_list):
+        mutation_addition_prob1 = mutation_probability * (len(offspring1)) / (len(feature_list) - len(offspring1))
+    elif len(offspring1) == 0 and len(offspring1) != len(feature_list):
+        mutation_addition_prob1 = mutation_probability
+    elif len(offspring1) == len(feature_list):
+        mutation_addition_prob1 = 0
 
-        # Mutation: Deletion occurs on features with probability equal to the mutation parameter
-        offspring1_df = pd.DataFrame(offspring1, columns=['Features'])
-        mutation_threshold1 = list([mutation_probability * 100] * len(offspring1))
-        np.random.seed(random_seeds[num_replacement_sets * 3 + i])
-        rand1 = list(np.random.randint(0, 101, len(offspring1)))
-        offspring1_df['Threshold'] = mutation_threshold1
-        offspring1_df['Rand_prob'] = rand1
+    if len(offspring2) > 0 and len(offspring2) != len(feature_list):
+        mutation_addition_prob2 = mutation_probability * (len(offspring2)) / (len(feature_list) - len(offspring2))
+    elif len(offspring2) == 0 and len(offspring2) != len(feature_list):
+        mutation_addition_prob2 = mutation_probability
+    elif len(offspring2) == len(feature_list):
+        mutation_addition_prob2 = 0
 
-        offspring2_df = pd.DataFrame(offspring2, columns=['Features'])
-        mutation_threshold2 = list([mutation_probability * 100] * len(offspring2))
-        np.random.seed(random_seeds[num_replacement_sets * 4 + i])
-        rand2 = list(np.random.randint(0, 101, len(offspring2)))
-        offspring2_df['Threshold'] = mutation_threshold2
-        offspring2_df['Rand_prob'] = rand2
+    # Mutation: Deletion occurs on features with probability equal to the mutation parameter
+    offspring1_df = pd.DataFrame(offspring1, columns=['Features'])
+    mutation_threshold1 = list([mutation_probability * 100] * len(offspring1))
+    np.random.seed(random_seeds[3])
+    rand1 = list(np.random.randint(0, 101, len(offspring1)))
+    offspring1_df['Threshold'] = mutation_threshold1
+    offspring1_df['Rand_prob'] = rand1
 
-        offspring1_df = offspring1_df.loc[offspring1_df['Threshold'] < offspring1_df['Rand_prob']]
-        offspring1 = list(offspring1_df['Features'])
+    offspring2_df = pd.DataFrame(offspring2, columns=['Features'])
+    mutation_threshold2 = list([mutation_probability * 100] * len(offspring2))
+    np.random.seed(random_seeds[4])
+    rand2 = list(np.random.randint(0, 101, len(offspring2)))
+    offspring2_df['Threshold'] = mutation_threshold2
+    offspring2_df['Rand_prob'] = rand2
 
-        offspring2_df = offspring2_df.loc[offspring2_df['Threshold'] < offspring2_df['Rand_prob']]
-        offspring2 = list(offspring2_df['Features'])
+    offspring1_df = offspring1_df.loc[offspring1_df['Threshold'] < offspring1_df['Rand_prob']]
+    offspring1 = list(offspring1_df['Features'])
 
-        # Mutation: Addition occurs on this feature with probability proportional to the mutation parameter
-        # The probability accounts for the ratio between the feature list and the size of the bin
+    offspring2_df = offspring2_df.loc[offspring2_df['Threshold'] < offspring2_df['Rand_prob']]
+    offspring2 = list(offspring2_df['Features'])
 
-        features_not_in_offspring1 = [item for item in feature_list if item not in offspring1]
-        features_not_in_offspring2 = [item for item in feature_list if item not in offspring2]
+    # Mutation: Addition occurs on this feature with probability proportional to the mutation parameter
+    # The probability accounts for the ratio between the feature list and the size of the bin
 
-        features_not_in_offspring1_df = pd.DataFrame(features_not_in_offspring1, columns=['Features'])
-        mutation_addition_threshold1 = list([mutation_addition_prob1 * 100] * len(features_not_in_offspring1_df))
-        np.random.seed(random_seeds[num_replacement_sets * 5 + i])
-        rand1 = list(np.random.randint(0, 101, len(features_not_in_offspring1)))
-        features_not_in_offspring1_df['Threshold'] = mutation_addition_threshold1
-        features_not_in_offspring1_df['Rand_prob'] = rand1
+    features_not_in_offspring1 = [item for item in feature_list if item not in offspring1]
+    features_not_in_offspring2 = [item for item in feature_list if item not in offspring2]
 
-        features_not_in_offspring2_df = pd.DataFrame(features_not_in_offspring2, columns=['Features'])
-        mutation_addition_threshold2 = list([mutation_addition_prob2 * 100] * len(features_not_in_offspring2_df))
-        np.random.seed(random_seeds[num_replacement_sets * 6 + i])
-        rand2 = list(np.random.randint(0, 101, len(features_not_in_offspring2)))
-        features_not_in_offspring2_df['Threshold'] = mutation_addition_threshold2
-        features_not_in_offspring2_df['Rand_prob'] = rand2
+    features_not_in_offspring1_df = pd.DataFrame(features_not_in_offspring1, columns=['Features'])
+    mutation_addition_threshold1 = list([mutation_addition_prob1 * 100] * len(features_not_in_offspring1_df))
+    np.random.seed(random_seeds[5])
+    rand1 = list(np.random.randint(0, 101, len(features_not_in_offspring1)))
+    features_not_in_offspring1_df['Threshold'] = mutation_addition_threshold1
+    features_not_in_offspring1_df['Rand_prob'] = rand1
 
-        features_to_add1 = list(features_not_in_offspring1_df.loc[
-                                    features_not_in_offspring1_df['Threshold'] >= features_not_in_offspring1_df[
-                                        'Rand_prob']]['Features'])
-        features_to_add2 = list(features_not_in_offspring2_df.loc[
-                                    features_not_in_offspring2_df['Threshold'] >= features_not_in_offspring2_df[
-                                        'Rand_prob']]['Features'])
+    features_not_in_offspring2_df = pd.DataFrame(features_not_in_offspring2, columns=['Features'])
+    mutation_addition_threshold2 = list([mutation_addition_prob2 * 100] * len(features_not_in_offspring2_df))
+    np.random.seed(random_seeds[6])
+    rand2 = list(np.random.randint(0, 101, len(features_not_in_offspring2)))
+    features_not_in_offspring2_df['Threshold'] = mutation_addition_threshold2
+    features_not_in_offspring2_df['Rand_prob'] = rand2
 
-        offspring1.extend(features_to_add1)
-        offspring2.extend(features_to_add2)
+    features_to_add1 = list(features_not_in_offspring1_df.loc[
+                                features_not_in_offspring1_df['Threshold'] >= features_not_in_offspring1_df[
+                                    'Rand_prob']]['Features'])
+    features_to_add2 = list(features_not_in_offspring2_df.loc[
+                                features_not_in_offspring2_df['Threshold'] >= features_not_in_offspring2_df[
+                                    'Rand_prob']]['Features'])
 
-        # Ensuring that each of the offspring is no more than c times the size of the other offspring
-        if not (bin_size_variability_constraint is None):
-            c_constraint = bin_size_variability_constraint
-            np.random.seed(random_seeds[num_replacement_sets * 7 + i])
-            random_seeds_loop = np.random.randint(len(feature_list) * len(feature_list), size=2 * len(feature_list))
-            counter = 0
-            while counter < 2 * len(feature_list) and (
-                    len(offspring1) > c_constraint * len(offspring2)
-                    or len(offspring2) > c_constraint * len(offspring1)):
-                np.random.seed(random_seeds_loop[counter])
-                random.seed(random_seeds_loop[counter])
+    offspring1.extend(features_to_add1)
+    offspring2.extend(features_to_add2)
 
-                if len(offspring1) > c_constraint * len(offspring2):
-                    min_features = int((len(offspring1) + len(offspring2)) / (c_constraint + 1)) + 1
-                    min_to_move = min_features - len(offspring2)
-                    max_to_move = len(offspring1) - min_features
-                    if min_to_move > max_to_move:
-                        num_to_move = np.random.randint(max_to_move, min_to_move + 1)
-                    else:
-                        num_to_move = np.random.randint(min_to_move, max_to_move + 1)
-                    features_to_move = list(random.sample(offspring1, num_to_move))
-                    offspring1 = [x for x in offspring1 if x not in features_to_move]
-                    offspring2.extend(features_to_move)
-                elif len(offspring2) > c_constraint * len(offspring1):
-                    min_features = int((len(offspring1) + len(offspring2)) / (c_constraint + 1)) + 1
-                    min_to_move = min_features - len(offspring1)
-                    max_to_move = len(offspring2) - min_features
-                    num_to_move = np.random.randint(min_to_move, max_to_move + 1)
-                    features_to_move = random.sample(offspring2, num_to_move)
-                    offspring2 = [x for x in offspring2 if x not in features_to_move]
-                    offspring1.extend(features_to_move)
-                offspring1 = list(set(offspring1))
-                offspring2 = list(set(offspring2))
-                counter = counter + 1
+    # Ensuring that each of the offspring is no more than c times the size of the other offspring
+    if not (bin_size_variability_constraint is None):
+        c_constraint = bin_size_variability_constraint
+        np.random.seed(random_seeds[7])
+        random_seeds_loop = np.random.randint(len(feature_list) * len(feature_list), size=2 * len(feature_list))
+        counter = 0
+        while counter < 2 * len(feature_list) and len(offspring1) > c_constraint * len(offspring2) or len(
+                offspring2) > c_constraint * len(offspring1):
+            np.random.seed(random_seeds_loop[counter])
+            random.seed(random_seeds_loop[counter])
 
-        # Ensuring the size of the offspring is not greater than the max_features_per_bin allowed
-        if not (max_features_per_bin is None):
-            if len(offspring1) > max_features_per_bin:
-                random.seed(random_seeds[num_replacement_sets * 8 + i])
-                offspring1 = list(random.sample(offspring1, max_features_per_bin))
-            if len(offspring2) > max_features_per_bin:
-                random.seed(random_seeds[num_replacement_sets * 9 + i])
-                offspring2 = list(random.sample(offspring2, max_features_per_bin))
+            if len(offspring1) > c_constraint * len(offspring2):
+                min_features = int((len(offspring1) + len(offspring2)) / (c_constraint + 1)) + 1
+                min_to_move = min_features - len(offspring2)
+                max_to_move = len(offspring1) - min_features
+                num_to_move = np.random.randint(min_to_move, max_to_move + 1)
+                features_to_move = list(random.sample(offspring1, num_to_move))
+                offspring1 = [x for x in offspring1 if x not in features_to_move]
+                offspring2.extend(features_to_move)
+            elif len(offspring2) > c_constraint * len(offspring1):
+                min_features = int((len(offspring1) + len(offspring2)) / (c_constraint + 1)) + 1
+                min_to_move = min_features - len(offspring1)
+                max_to_move = len(offspring2) - min_features
+                num_to_move = np.random.randint(min_to_move, max_to_move + 1)
+                features_to_move = random.sample(offspring2, num_to_move)
+                offspring2 = [x for x in offspring2 if x not in features_to_move]
+                offspring1.extend(features_to_move)
+            offspring1 = list(set(offspring1))
+            offspring2 = list(set(offspring2))
+            counter = counter + 1
 
-        # Adding the new offspring to the list of feature bins
-        offspring_list.append(offspring1)
-        offspring_list.append(offspring2)
+    # Ensuring the size of the offspring is not greater than the max_features_per_bin allowed
+    if not (max_features_per_bin is None):
+        if len(offspring1) > max_features_per_bin:
+            random.seed(random_seeds[8])
+            offspring1 = list(random.sample(offspring1, max_features_per_bin))
+        if len(offspring2) > max_features_per_bin:
+            random.seed(random_seeds[9])
+            offspring2 = list(random.sample(offspring2, max_features_per_bin))
+
+    # Adding the new offspring to the list of feature bins
+    offspring_list.append(offspring1)
+    offspring_list.append(offspring2)
 
     return offspring_list
 
@@ -646,6 +667,7 @@ def regroup_feature_matrix(feature_list, feature_matrix, label_name, feature_bin
 
     # For each feature group/bin, the values of the features in the bin will be summed to create a value for the bin
     # This will be used to create a feature matrix for the bins and a dictionary of binned feature groups
+
     count = 0
     binned_feature_groups = {}
 
@@ -664,8 +686,8 @@ def regroup_feature_matrix(feature_list, feature_matrix, label_name, feature_bin
 
 # Defining a function for the RAFE algorithm (Relief-based Association Feature-bin Evolver)
 # Same as RARE, but it bins all features not just rare features
-def rafe_algorithm(given_starting_point, amino_acid_start_point, amino_acid_bins_start_point,
-                   iterations, original_feature_matrix,
+def rafe_algorithm(given_starting_point, amino_acid_start_point, amino_acid_bins_start_point, iterations,
+                   original_feature_matrix,
                    label_name, set_number_of_bins, min_features_per_group, max_number_of_groups_with_feature,
                    scoring_method, score_based_on_sample, instance_sample_size,
                    crossover_probability, mutation_probability, elitism_parameter, random_seed,
@@ -679,7 +701,7 @@ def rafe_algorithm(given_starting_point, amino_acid_start_point, amino_acid_bins
     # Initialize Feature Groups
 
     # If there is a starting point, use that for the amino acid list and the amino acid bins list
-    if given_starting_point:
+    if given_starting_point is True:
         # Keep only MAF != 0 features from starting points in amino_acids and amino_acid_bins
         amino_acids = list(set(amino_acid_start_point).intersection(nonempty_feature_list))
 
@@ -725,11 +747,12 @@ def rafe_algorithm(given_starting_point, amino_acid_start_point, amino_acid_bins
 
         # Step 2b: Genetic Algorithm
         # Creating the offspring bins through crossover and mutation
-        offspring_bins = crossover_and_mutation(set_number_of_bins, elitism_parameter, amino_acids, amino_acid_bins,
-                                                amino_acid_bin_scores,
-                                                crossover_probability, mutation_probability, random_seeds[i],
-                                                bin_size_variability_constraint,
-                                                max_features_per_bin)
+        offspring_bins = crossover_and_mutation_multiprocess(set_number_of_bins, elitism_parameter, amino_acids,
+                                                             amino_acid_bins, amino_acid_bin_scores,
+                                                             crossover_probability, mutation_probability,
+                                                             random_seeds[i], bin_size_variability_constraint,
+                                                             max_features_per_bin)
+
         # Creating the new generation by preserving some elites and adding the offspring
         feature_bin_list = create_next_generation(amino_acid_bins, amino_acid_bin_scores, set_number_of_bins,
                                                   elitism_parameter, offspring_bins)
@@ -782,7 +805,7 @@ def top_bins_summary(original_feature_matrix, label_name, bin_feature_matrix, bi
         univariate_feature_stats[feature_list[i]] = list_of_stats
         # There will be features with nan for their chi-square value and p-value because the whole column is zeroes
 
-    # Calculating the chisquare and p values of each of the features in the bin feature matrix
+    # Calculating the chi-square and p values of each of the features in the bin feature matrix
     x = bin_feature_matrix.drop('Class', axis=1)
     y = bin_feature_matrix['Class']
     chi_scores, p_values = chi2(x, y)
@@ -810,9 +833,8 @@ def top_bins_summary(original_feature_matrix, label_name, bin_feature_matrix, bi
                 univariate_feature_stats[bins[sorted_bin_list[i]][j]][1]))
         print('---------------------------')
 
-    # Defining a function for the RARE algorithm (Relief-based Association Rare-variant-bin Evolver)
 
-
+# Defining a function for the RARE algorithm (Relief-based Association Rare-variant-bin Evolver)
 def rare_algorithm_v2(given_starting_point, amino_acid_start_point, amino_acid_bins_start_point, iterations,
                       original_feature_matrix,
                       label_name, rare_variant_maf_cutoff, set_number_of_bins,
@@ -858,8 +880,6 @@ def rare_algorithm_v2(given_starting_point, amino_acid_start_point, amino_acid_b
     upper_bound = (len(rare_feature_list) + len(common_feature_list) + len(maf_0_features)) * (
             len(rare_feature_list) + len(common_feature_list) + len(maf_0_features))
     random_seeds = np.random.randint(upper_bound, size=iterations * 2)
-    offspring_bins = []
-    feature_bin_list = []
     for i in range(0, iterations):
         print("iteration:" + str(i))
 
@@ -909,11 +929,11 @@ def rare_algorithm_v2(given_starting_point, amino_acid_start_point, amino_acid_b
 
         # Step 2b: Genetic Algorithm
         # Creating the offspring bins through crossover and mutation
-        offspring_bins = crossover_and_mutation(set_number_of_bins, elitism_parameter, amino_acids, amino_acid_bins,
-                                                amino_acid_bin_scores,
-                                                crossover_probability, mutation_probability, random_seeds[i],
-                                                bin_size_variability_constraint,
-                                                max_features_per_bin)
+        offspring_bins = crossover_and_mutation_multiprocess(set_number_of_bins, elitism_parameter, amino_acids,
+                                                             amino_acid_bins, amino_acid_bin_scores,
+                                                             crossover_probability, mutation_probability,
+                                                             random_seeds[i], bin_size_variability_constraint,
+                                                             max_features_per_bin)
 
         # Creating the new generation by preserving some elites and adding the offspring
         feature_bin_list = create_next_generation(amino_acid_bins, amino_acid_bin_scores, set_number_of_bins,
@@ -986,8 +1006,8 @@ def top_rare_variant_bins_summary(rare_feature_matrix, label_name, bins, bin_sco
 
     # Calculating the chi square and p values of each of the features in the rare feature matrix
     df = rare_feature_matrix
-    x = df.drop(label_name, axis=1)
-    y = df[label_name]
+    x = df.drop('Class', axis=1)
+    y = df['Class']
     chi_scores, p_values = chi2(x, y)
 
     # Removing the label column to create a list of features
@@ -1007,9 +1027,9 @@ def top_rare_variant_bins_summary(rare_feature_matrix, label_name, bins, bin_sco
         univariate_feature_stats[feature_list[i]] = list_of_stats
         # There will be features with nan for their chi-square value and p-value because the whole column is zeroes
 
-    # Calculating the chi-square and p values of each of the features in the bin feature matrix
-    x = bin_feature_matrix.drop(label_name, axis=1)
-    y = bin_feature_matrix[label_name]
+    # Calculating the chisquare and p values of each of the features in the bin feature matrix
+    x = bin_feature_matrix.drop('Class', axis=1)
+    y = bin_feature_matrix['Class']
     chi_scores, p_values = chi2(x, y)
 
     # Creating a dictionary with each bin and the chi-square value and p-value
@@ -1020,8 +1040,7 @@ def top_rare_variant_bins_summary(rare_feature_matrix, label_name, bins, bin_sco
         list_of_stats.append(chi_scores[i])
         list_of_stats.append(p_values[i])
         bin_stats[bin_names_list[i]] = list_of_stats
-
-    string_df = list()
+    string_df = []
     for i in range(0, number_of_top_bins):
         # Printing the bin Name
         string_df.append("Bin Rank " + str(i + 1) + ": " + str(sorted_bin_list[i]))
@@ -1044,8 +1063,8 @@ def top_rare_variant_bins_summary(rare_feature_matrix, label_name, bins, bin_sco
 
 
 # Defining a function to create an artificial dataset with parameters, there will be one ideal/strong bin
-# Note: MAF (minor allele frequency) cutoff refers to the threshold
-# separating rare variant features from common features
+# Note: MAF (minor allele frequency) cutoff refers to the threshold separating rare variant features from common
+# features
 def rvds_one_bin(number_of_instances, number_of_features, number_of_features_in_bin,
                  rare_variant_maf_cutoff, endpoint_cutoff_parameter, endpoint_variation_probability):
     # Creating an empty dataframe to use as a starting point for the eventual feature matrix
@@ -1173,11 +1192,11 @@ def rvds_one_bin(number_of_instances, number_of_features, number_of_features_in_
 
 
 # Defining a function to create an artificial dataset with parameters
-# There will be an epistatic relationship between a bin and a common feature
+# There will be an epi-static relationship between a bin and a common feature
 
 # Note: MAF (minor allele frequency) cutoff refers to the threshold separating rare variant features from common
 # features Common feature genotype frequencies list should be of the form [0.25, 0.5, 0.25] (numbers should add up to
-# 1) List of predictive MLGs (multi-locus genotypes) should contain any of the 9 possibilities and be of the form
+# 1) List of predictive MLGs (multi-locus genotypes) should contain any of the 9 possibilites and be of the form
 # below: [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb] Genotype Cutoff Metric can be mean or median
 def rvds_bin_epistatic_interaction_with_common_feature(number_of_instances, number_of_rare_features,
                                                        number_of_features_in_bin,
@@ -1193,7 +1212,7 @@ def rvds_bin_epistatic_interaction_with_common_feature(number_of_instances, numb
     # Creating a list of features
     feature_list = []
 
-    # Creating a list of features in the bin that interacts epistatically with the common feature
+    # Creating a list of features in the bin that interacts epi-statically with the common feature
     predictive_features = []
     for a in range(0, number_of_features_in_bin):
         predictive_features.append("P_" + str(a + 1))
@@ -1258,7 +1277,7 @@ def rvds_bin_epistatic_interaction_with_common_feature(number_of_instances, numb
         if bin_values[i] != 0:
             nonzero_bin_values.append(bin_values[i])
 
-    Aa_aa_cutoff = 0
+    Aa_aa_cutoff = 0.5
 
     if genotype_cutoff_metric == 'mean':
         Aa_aa_cutoff = statistics.mean(nonzero_bin_values)
@@ -1437,6 +1456,12 @@ def rvds_bin_epistatic_interaction_with_common_feature(number_of_instances, numb
 # Defining a function for the RARE algorithm (Relief-based Association Rare-variant-bin Evolver)
 # This version of the function will tell if the algorithm has reached the 80% solution
 # For testing purposes
+# def rare_check_for_80_pct(given_starting_point, amino_acid_start_point, amino_acid_bins_start_point, iterations,
+#                           original_feature_matrix,
+#                           label_name, rare_variant_maf_cutoff, set_number_of_bins,
+#                           min_features_per_group, max_number_of_groups_with_feature,
+#                           scoring_method, score_based_on_sample, score_with_common_variables,
+#                           instance_sample_size, crossover_probability, mutation_probability, elitism_parameter):
 def rare_check_for_80_pct(given_starting_point, amino_acid_start_point, amino_acid_bins_start_point, iterations,
                           original_feature_matrix,
                           label_name, rare_variant_maf_cutoff, set_number_of_bins,
@@ -1445,11 +1470,9 @@ def rare_check_for_80_pct(given_starting_point, amino_acid_start_point, amino_ac
                           instance_sample_size, crossover_probability, mutation_probability, elitism_parameter,
                           random_seed, bin_size_variability_constraint, max_features_per_bin):
     # Step 0: Separate Rare Variants and Common Features
-    rare_feature_list, rare_feature_maf_dict, \
-        rare_feature_df, common_feature_list, \
-        common_feature_maf_dict, common_feature_df, \
-        maf_0_features = rare_and_common_variable_separation(original_feature_matrix,
-                                                             label_name, rare_variant_maf_cutoff)
+    rare_feature_list, rare_feature_maf_dict, rare_feature_df, common_feature_list, common_feature_maf_dict, \
+        common_feature_df, maf_0_features = rare_and_common_variable_separation(original_feature_matrix,
+                                                                                label_name, rare_variant_maf_cutoff)
 
     # Step 1: Initialize Population of Candidate Bins
     # Initialize Feature Groups
@@ -1471,14 +1494,12 @@ def rare_check_for_80_pct(given_starting_point, amino_acid_start_point, amino_ac
     elif not given_starting_point:
         amino_acids, amino_acid_bins = random_feature_grouping(rare_feature_df, label_name,
                                                                set_number_of_bins, min_features_per_group,
-                                                               max_number_of_groups_with_feature, random_seed,
-                                                               max_features_per_bin)
+                                                               max_number_of_groups_with_feature,
+                                                               random_seed, max_features_per_bin)
     # Create Initial Binned Feature Matrix
     bin_feature_matrix = grouped_feature_matrix(rare_feature_df, label_name, amino_acid_bins)
 
     # Step 2: Genetic Algorithm with Feature Scoring (repeated for a given number of iterations)
-    random.seed(random_seed)
-    random_seeds = np.random.rand(iterations * 2)
     for iteration in range(0, iterations):
 
         # Step 2a: Feature Importance Scoring and Bin Deletion
@@ -1523,15 +1544,15 @@ def rare_check_for_80_pct(given_starting_point, amino_acid_start_point, amino_ac
                                                                                               label_name)
 
         elif scoring_method == 'Univariate':
-            amino_acid_bin_scores = chi_square_feature_importance(bin_feature_matrix, label_name, amino_acid_bins)
+            amino_acid_bin_scores = chi_square_feature_importance(bin_feature_matrix, 'Class', amino_acid_bins)
 
         # Step 2b: Genetic Algorithm
         # Creating the offspring bins through crossover and mutation
-        offspring_bins = crossover_and_mutation(set_number_of_bins, elitism_parameter, amino_acids, amino_acid_bins,
-                                                amino_acid_bin_scores,
-                                                crossover_probability, mutation_probability, random_seeds[iteration],
-                                                bin_size_variability_constraint,
-                                                max_features_per_bin)
+        offspring_bins = crossover_and_mutation_multiprocess(set_number_of_bins, elitism_parameter, amino_acids,
+                                                             amino_acid_bins, amino_acid_bin_scores,
+                                                             crossover_probability, mutation_probability, random_seed,
+                                                             bin_size_variability_constraint,
+                                                             max_features_per_bin)
 
         # Creating the new generation by preserving some elites and adding the offspring
         feature_bin_list = create_next_generation(amino_acid_bins, amino_acid_bin_scores, set_number_of_bins,
@@ -1539,8 +1560,7 @@ def rare_check_for_80_pct(given_starting_point, amino_acid_start_point, amino_ac
 
         # Updating the binned feature matrix
         bin_feature_matrix, amino_acid_bins = regroup_feature_matrix(amino_acids, rare_feature_df, label_name,
-                                                                     feature_bin_list,
-                                                                     random_seeds[iteration + iterations])
+                                                                     feature_bin_list, random_seed)
 
         # Adding the stopping criteria:
         stop = False
@@ -1558,7 +1578,7 @@ def rare_check_for_80_pct(given_starting_point, amino_acid_start_point, amino_ac
                     random_intersection) < 3:
                 stop = True
 
-        if stop:
+        if stop is True:
             print("Reached 80% at " + str(iteration + 1))
 
         elif not stop:
@@ -1612,7 +1632,6 @@ def rare_check_for_80_pct(given_starting_point, amino_acid_start_point, amino_ac
     bin_feature_matrix['Class'] = original_feature_matrix[label_name]
     common_features_and_bins_matrix['Class'] = original_feature_matrix[label_name]
 
-    return bin_feature_matrix, common_features_and_bins_matrix, \
-        amino_acid_bins, amino_acid_bin_scores, \
-        rare_feature_maf_dict, common_feature_maf_dict, \
+    return bin_feature_matrix, common_features_and_bins_matrix, amino_acid_bins, \
+        amino_acid_bin_scores, rare_feature_maf_dict, common_feature_maf_dict, \
         rare_feature_df, common_feature_df, maf_0_features

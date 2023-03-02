@@ -146,7 +146,7 @@ def Crossover_and_Mutation2(parent1_features, parent2_features, feature_list, cr
 
 
 
-# In[ ]:
+
 
 
 #Defining a function for crossover and mutation that creates n offspring based on crossover of selected parents

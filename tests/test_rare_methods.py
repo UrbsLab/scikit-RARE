@@ -341,7 +341,7 @@ def Crossover_and_Mutation_Edited(parent1_features, parent2_features, feature_li
 
 
 
-# In[ ]:
+
 
 
 #Defining a function for crossover and mutation that creates n offspring based on crossover of selected parents
@@ -481,7 +481,7 @@ def Crossover_and_Mutation_Original(parent1_features, parent2_features, feature_
     
     return offspring_list
 
-# In[ ]:
+
 
 #Defining a function to delete variables with MAF = 0
 def Remove_Empty_Variables (original_feature_matrix, label_name):
@@ -594,7 +594,7 @@ def Grouped_Feature_Matrix(feature_matrix, label_name, binned_feature_groups):
     return bins_df
 
 
-# In[ ]:
+
 
 
 #Defining a function to separate rare and common variables based on a rare variant minor allele frequency (MAF) cutoff
@@ -653,7 +653,7 @@ def Chi_Square_Feature_Importance(bin_feature_matrix, label_name, amino_acid_bin
     
     return bin_scores
 
-# In[ ]:
+
 
 
 def Create_Next_Generation(binned_feature_groups, bin_scores, max_population_of_bins, elitism_parameter, offspring_list):
