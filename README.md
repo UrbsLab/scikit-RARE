@@ -11,9 +11,9 @@ RARE constructs bins of rare variant features with relevant association to class
 3. Final bin evaluation and summary of top bins
 
 ## Installation
-We can easily install skikit-RARE using the following command:
+We can easily install skikit-rare using the following command:
 ```
-pip install scikit-RARE
+pip install scikit-rare
 ```
 
 ## Parameters for RARE Class:

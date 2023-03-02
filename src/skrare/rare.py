@@ -1,24 +1,65 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from skrare.methods import rare_algorithm_v2
+from skrare.methods import rare_algorithm_v2 as rare_algorithm_single
+from skrare.multi_methods import rare_algorithm_v2 as rare_algorithm_multi
 
 
 class RARE(BaseEstimator, TransformerMixin):
     def __init__(self, label_name="Class", duration_name="grf_yrs",
                  given_starting_point=False, amino_acid_start_point=None, amino_acid_bins_start_point=None,
-                 iterations=1000, set_number_of_bins=1, min_features_per_group=1, max_number_of_groups_with_feature=1,
+                 iterations=1000, rare_variant_maf_cutoff=1, set_number_of_bins=1, min_features_per_group=1,
+                 max_number_of_groups_with_feature=1,
                  informative_cutoff=0.2, crossover_probability=0.5, mutation_probability=0.05, elitism_parameter=0.2,
                  scoring_method='Relief', score_based_on_sample=True, score_with_common_variables=False,
                  instance_sample_size=500,
-                 random_seed=None, bin_size_variability_constraint=None, max_features_per_bin=None):
+                 random_seed=None, bin_size_variability_constraint=None, max_features_per_bin=None,
+                 multiprocessing=False):
+        """
+        A Scikit-Learn compatible framework for the RARE Algorithm
+
+        @:param given_starting_point: whether or not expert knowledge is being inputted (True or False)
+        @:param amino_acid_start_point: if RARE is starting with expert knowledge, input the list
+                of features here; otherwise None
+        @:param amino_acid_bins_start_point: if RARE is starting with expert knowledge, input the list of bins of
+                features here; otherwise None
+        @:param iterations: the number of evolutionary cycles RARE will run
+        @:param original_feature_matrix: the dataset
+        @:param label_name: label for the class/endpoint column in the dataset (e.g., 'Class')
+        @:param rare_variant_maf_cutoff: the minor allele frequency cutoff separating common features from rare
+                variant features
+        @:param set_number_of_bins: the population size of candidate bins
+        @:param min_features_per_group: the minimum number of features in a bin
+        @:param max_number_of_groups_with_feature: the maximum number of bins containing a feature
+        @:param scoring_method: 'Univariate', 'Relief', or 'Relief only on bin and common features'
+        @:param score_based_on_sample: if Relief scoring is used, whether or not bin evaluation is done based on a
+                sample of instances rather than the whole dataset
+        @:param score_with_common_variables: if Relief scoring is used, whether or not common features should be
+                used as context for evaluating rare variant bins
+        @:param instance_sample_size: if bin evaluation is done based on a sample of instances,
+                input the sample size here
+        @:param crossover_probability: the probability of each feature in an offspring bin to crossover
+                to the paired offspring bin (recommendation: 0.5 to 0.8)
+        @:param mutation_probability: the probability of each feature in a bin to be deleted (a proportionate
+                probability is automatically applied on each feature outside the bin to be added
+                (recommendation: 0.05 to 0.5 depending on situation and number of iterations run)
+        @:param elitism_parameter: the proportion of elite bins in the current generation to be
+                preserved for the next evolutionary cycle (recommendation: 0.2 to 0.8
+                depending on conservativeness of approach and number of iterations run)
+        @:param random_seed: the seed value needed to generate a random number
+        @:param bin_size_variability_constraint: sets the max bin size of children to be n
+                times the size of their sibling (recommendation: 2, with larger or smaller
+                values the population would trend heavily towards small or large bins without
+                exploring the search space)
+        @:param max_features_per_bin: sets a max value for the number of features per bin
+        @:param multiprocessing: flag for using multiprocessing implementation of RARE
+        """
 
         # iterations
         self.score_with_common_variables = score_with_common_variables
         self.score_based_on_sample = score_based_on_sample
         self.scoring_method = scoring_method
         self.rare_variant_maf_cutoff = rare_variant_maf_cutoff
-        self.original_feature_matrix = original_feature_matrix
 
         if not self.check_is_int(iterations):
             raise Exception("iterations param must be nonnegative integer")
@@ -150,6 +191,7 @@ class RARE(BaseEstimator, TransformerMixin):
         self.bin_size_variability_constraint = bin_size_variability_constraint
         self.max_features_per_bin = max_features_per_bin
         self.reboot_filename = None
+        self.multiprocessing = multiprocessing
 
         # Reboot Population
         if self.reboot_filename is not None:
@@ -172,11 +214,12 @@ class RARE(BaseEstimator, TransformerMixin):
         return isinstance(num, float)
 
     def fit(self, original_feature_matrix, y=None):
-        """Scikit-learn required: Supervised training of FIBERS
-        Parameters
-        X: array-like {n_samples, n_features} Training instances. ALL INSTANCE ATTRIBUTES MUST BE NUMERIC or NAN
-        y: array-like {n_samples} Training labels. ALL INSTANCE PHENOTYPES MUST BE NUMERIC NOT NAN OR OTHER TYPE
-        Returns self
+        """
+        Scikit-learn compatible fit function for supervised training of FIBERS
+
+        @:param X: array-like {n_samples, n_features} Training instances. ALL INSTANCE ATTRIBUTES MUST BE NUMERIC or NAN
+        @:param y: array-like {n_samples} Training labels. ALL INSTANCE PHENOTYPES MUST BE NUMERIC NOT NAN OR OTHER TYPE
+        @:return self
         """
         # original_feature_matrix
         if not (isinstance(original_feature_matrix, pd.DataFrame)):
@@ -202,29 +245,43 @@ class RARE(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, original_feature_matrix, y=None):
+        """
+        Scikit-learn compatible transform function for supervised training of FIBERS
 
+        @:param original_feature_matrix: original feature matrix. pd.DataFrame
+        @:param y: array-like {n_samples} Training labels.
+                ALL INSTANCE PHENOTYPES MUST BE NUMERIC NOT NAN OR OTHER TYPE
+        @:return self, bin_feature_matrix, common_features_and_bins_matrix, \
+                amino_acid_bins, amino_acid_bin_scores, rare_feature_maf_dict, \
+                common_feature_maf_dict, rare_feature_df, common_feature_df, maf_0_features
+        """
         if y is not None:
             pass
 
         if not (self.original_feature_matrix == original_feature_matrix):
             raise Exception("X param does not match fitted matrix. Fit needs to be first called on the same matrix.")
 
+        if self.multiprocessing:
+            rare_algorithm = rare_algorithm_multi
+        else:
+            rare_algorithm = rare_algorithm_single
+
         bin_feature_matrix, common_features_and_bins_matrix, amino_acid_bins, \
             amino_acid_bin_scores, rare_feature_maf_dict, \
             common_feature_maf_dict, \
             rare_feature_df, common_feature_df, \
-            maf_0_features = rare_algorithm_v2(self.given_starting_point, self.amino_acid_start_point,
-                                               self.amino_acid_bins_start_point, self.iterations,
-                                               self.original_feature_matrix,
-                                               self.label_name, self.rare_variant_maf_cutoff, self.set_number_of_bins,
-                                               self.min_features_per_group, self.max_number_of_groups_with_feature,
-                                               self.scoring_method, self.score_based_on_sample,
-                                               self.score_with_common_variables,
-                                               self.instance_sample_size,
-                                               self.crossover_probability, self.mutation_probability,
-                                               self.elitism_parameter,
-                                               self.random_seed, self.bin_size_variability_constraint,
-                                               self.max_features_per_bin)
+            maf_0_features = rare_algorithm(self.given_starting_point, self.amino_acid_start_point,
+                                            self.amino_acid_bins_start_point, self.iterations,
+                                            self.original_feature_matrix,
+                                            self.label_name, self.rare_variant_maf_cutoff, self.set_number_of_bins,
+                                            self.min_features_per_group, self.max_number_of_groups_with_feature,
+                                            self.scoring_method, self.score_based_on_sample,
+                                            self.score_with_common_variables,
+                                            self.instance_sample_size,
+                                            self.crossover_probability, self.mutation_probability,
+                                            self.elitism_parameter,
+                                            self.random_seed, self.bin_size_variability_constraint,
+                                            self.max_features_per_bin)
 
         return self, bin_feature_matrix, common_features_and_bins_matrix, \
             amino_acid_bins, amino_acid_bin_scores, rare_feature_maf_dict, \
