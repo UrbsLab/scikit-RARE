@@ -24,7 +24,7 @@ We can easily install scikit-rare using the following command:
 
 
 Documentation for FIBERS Class:
-------------------------------
+--------------------------------
 
 Documentation for the FIBERS class can be found `here <skrare.html#module-skrare.fibers>`_.
 
