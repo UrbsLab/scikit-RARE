@@ -23,10 +23,10 @@ We can easily install scikit-rare using the following command:
     pip install scikit-rare
 
 
-Documentation for FIBERS Class:
+Documentation for RARE Class:
 --------------------------------
 
-Documentation for the FIBERS class can be found `here <skrare.html#module-skrare.fibers>`_.
+Documentation for the RARE class can be found `here <skrare.html#module-skrare.fibers>`_.
 
 Contact
 -------------------------------
